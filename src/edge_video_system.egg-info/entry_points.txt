@@ -1,0 +1,3 @@
+[console_scripts]
+edge-video-device = edge_video.device:main
+edge-video-server = edge_video.edge:main
