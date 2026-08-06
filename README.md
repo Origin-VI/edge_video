@@ -56,7 +56,9 @@ python -m edge_video.edge `
   --detector yolo `
   --model yolo11n.pt `
   --classes 0 `
-  --confidence 0.4
+  --confidence 0.4 `
+  --tracking `
+  --roi 0.1,0.1,0.9,0.9
 ```
 
 模型第一次运行会自动下载。要检测全部 80 类目标，传入空的类别参数：
@@ -66,6 +68,8 @@ python -m edge_video.edge --detector yolo --classes ""
 ```
 
 如果笔记本有可用的 NVIDIA GPU，可追加 `--device 0`；没有时默认使用 CPU。
+
+ByteTrack 会为每个人分配持续的轨迹 ID。`--roi` 使用归一化坐标 `x1,y1,x2,y2` 定义统计区域，数值范围为 0 到 1。网页会显示区域内人数、活跃轨迹、累计进入/离开和最近事件；事件同时追加到 `artifacts/events.jsonl`。使用 `--no-tracking` 可以退回普通逐帧检测。
 
 ## 3. 树莓派部署
 
@@ -164,6 +168,29 @@ curl http://<笔记本IP>:8000/health
 2. 在 Windows 防火墙弹窗中允许 Python 接收连接，或为 TCP `8000` 创建入站规则。
 3. 如果两端 IP 正确但相互不可达，校园网可能启用了终端隔离。改用同一个手机热点或网线直连。
 
+### 证明视频通过 Wi-Fi 传输
+
+在树莓派执行，其中 `172.20.10.3` 替换为笔记本当前 IP：
+
+```bash
+ip route get 172.20.10.3
+```
+
+当前设备的预期输出类似：
+
+```text
+172.20.10.3 dev wlan0 src 172.20.10.2 uid 1000
+```
+
+关键字段是 `dev wlan0`，表示发往笔记本的视频数据经过树莓派无线网卡。还可以补充展示：
+
+```bash
+ip -br address show wlan0
+cat /sys/class/net/wlan0/operstate
+```
+
+`operstate` 输出 `up` 表示无线网卡正在工作。SSH 只是运行在这条 Wi-Fi 链路上的远程终端协议，并不是另一种物理连接；SSH 命令和 WebSocket 视频流都通过 `wlan0` 传输。
+
 ## 5. 共享网络上的访问令牌
 
 校园网中建议为发送接口设置共享令牌。在两端分别设置相同值，再启动程序：
@@ -190,7 +217,45 @@ python -m pytest
 python -m ruff check .
 ```
 
-## 7. 中国大陆网络下安装
+## 7. 树莓派进程控制与演示
+
+在树莓派工程目录创建运行配置：
+
+```bash
+cd /home/brilliant/Documents/project/edge_video
+cp .env.example .env
+```
+
+编辑 `.env`，至少设置正确的 `EDGE_SERVER_URL` 和与笔记本一致的 `EDGE_STREAM_TOKEN`。然后使用：
+
+```bash
+./scripts/device-control.sh start
+./scripts/device-control.sh status
+./scripts/device-control.sh stop
+./scripts/device-control.sh restart
+./scripts/device-control.sh logs
+```
+
+`start` 使用 `nohup` 将发送端放到后台，并把 PID 写入 `artifacts/device.pid`。进程不再依附 SSH 终端，因此关闭 SSH 或 VS Code Remote SSH 窗口后，视频仍会继续传输。可以用下面的命令证明进程没有终端：
+
+```bash
+ps -o pid,ppid,tty,stat,cmd -p "$(cat artifacts/device.pid)"
+```
+
+其中 `TTY` 为 `?` 表示进程不依赖 SSH 终端。
+
+演示发送端停止和恢复：
+
+```bash
+./scripts/device-control.sh stop
+# 网页状态变为“等待设备”
+./scripts/device-control.sh start
+# 发送端重新连接，网页恢复实时画面
+```
+
+这里的 `start` 是手动重新启动进程，WebSocket 连接会自动建立。真正的“断线自动重连”是指发送端仍在运行时，网络或笔记本服务暂时中断；发送端会持续重试，网络/服务恢复后无需重启树莓派进程即可重新连接。
+
+## 8. 中国大陆网络下安装
 
 普通 PyPI 依赖优先使用国内镜像，而不是依赖代理：
 

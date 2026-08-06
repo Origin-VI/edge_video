@@ -78,13 +78,15 @@
     dt { color: #a9b5af; font-size: 13px; }
     dd { margin: 0; font-variant-numeric: tabular-nums; font-size: 14px; }
     #objects { margin: 0; padding: 0; list-style: none; }
-    #objects li {
+    #objects li, #events li {
       padding: 9px 0;
       display: flex;
       justify-content: space-between;
       border-bottom: 1px solid #2b322f;
       font-size: 14px;
     }
+    #events { margin: 0; padding: 0; list-style: none; }
+    .section-gap { margin-top: 28px; }
     @media (max-width: 840px) {
       main { grid-template-columns: 1fr; }
       .video-area { min-height: 56vw; padding: 10px; }
@@ -115,8 +117,17 @@
         <div class="metric"><dt>压缩帧大小</dt><dd id="jpeg_kb">-</dd></div>
         <div class="metric"><dt>主动丢旧帧</dt><dd id="dropped_frames">0</dd></div>
       </dl>
+      <h2>区域统计</h2>
+      <dl>
+        <div class="metric"><dt>区域内人数</dt><dd id="current_inside">0</dd></div>
+        <div class="metric"><dt>活跃轨迹</dt><dd id="active_tracks">0</dd></div>
+        <div class="metric"><dt>累计进入</dt><dd id="total_entered">0</dd></div>
+        <div class="metric"><dt>累计离开</dt><dd id="total_exited">0</dd></div>
+      </dl>
       <h2>当前检测结果</h2>
       <ul id="objects"><li><span>暂无目标</span><span>-</span></li></ul>
+      <h2 class="section-gap">最近事件</h2>
+      <ul id="events"><li><span>暂无事件</span><span>-</span></li></ul>
     </aside>
   </main>
   <script>
@@ -129,7 +140,11 @@
       inference_ms: " ms",
       end_to_end_ms: " ms",
       jpeg_kb: " KB",
-      dropped_frames: ""
+      dropped_frames: "",
+      current_inside: "",
+      active_tracks: "",
+      total_entered: "",
+      total_exited: ""
     };
 
     async function refreshStatus() {
@@ -157,10 +172,29 @@
             const row = document.createElement("li");
             const label = document.createElement("span");
             const confidence = document.createElement("span");
-            label.textContent = item.label;
+            const track = item.track_id === undefined ? "" : `#${item.track_id} `;
+            const region = item.inside_roi ? " · ROI" : "";
+            label.textContent = `${track}${item.label}${region}`;
             confidence.textContent = `${Math.round(item.confidence * 100)}%`;
             row.append(label, confidence);
             objects.append(row);
+          }
+        }
+
+        const events = document.getElementById("events");
+        events.replaceChildren();
+        const recentEvents = data.recent_events || [];
+        if (recentEvents.length === 0) {
+          events.innerHTML = "<li><span>暂无事件</span><span>-</span></li>";
+        } else {
+          for (const item of recentEvents.slice(0, 8)) {
+            const row = document.createElement("li");
+            const label = document.createElement("span");
+            const timestamp = document.createElement("span");
+            label.textContent = `#${item.track_id} ${item.type === "entered" ? "进入" : "离开"}`;
+            timestamp.textContent = new Date(item.timestamp * 1000).toLocaleTimeString();
+            row.append(label, timestamp);
+            events.append(row);
           }
         }
       } catch (_) {
