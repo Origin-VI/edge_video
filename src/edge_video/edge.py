@@ -12,14 +12,22 @@ import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from edge_video.detection import Detector, build_detector
 from edge_video.protocol import ProtocolError, unpack_frame
+from edge_video.recognition import (
+    MAX_UPLOAD_BYTES,
+    EnrollmentError,
+    FaceRegistry,
+    OpenCvFaceBackend,
+    ensure_face_models,
+)
 from edge_video.state import RuntimeState
 
 LOG = logging.getLogger("edge_video.edge")
@@ -93,6 +101,7 @@ def create_app(
     detector: Detector,
     token: str = "",
     event_log_path: Path | None = None,
+    face_registry: FaceRegistry | None = None,
 ) -> FastAPI:
     state = RuntimeState()
 
@@ -120,6 +129,37 @@ def create_app(
     @app.get("/api/status")
     async def status() -> JSONResponse:
         return JSONResponse(state.snapshot())
+
+    @app.get("/api/faces")
+    async def list_faces() -> JSONResponse:
+        identities = face_registry.list_identities() if face_registry is not None else []
+        return JSONResponse({"enabled": face_registry is not None, "identities": identities})
+
+    @app.post("/api/faces", status_code=201)
+    async def enroll_face(
+        name: Annotated[str, Form()],
+        photo: Annotated[UploadFile, File()],
+    ) -> JSONResponse:
+        if face_registry is None:
+            raise HTTPException(status_code=503, detail="人脸识别功能未启用")
+        content = await photo.read(MAX_UPLOAD_BYTES + 1)
+        try:
+            identity = await asyncio.to_thread(face_registry.enroll, name, content)
+        except EnrollmentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse(identity, status_code=201)
+
+    @app.get("/api/faces/{identity_id}/photo")
+    async def face_photo(identity_id: str) -> FileResponse:
+        path = face_registry.photo_path(identity_id) if face_registry is not None else None
+        if path is None:
+            raise HTTPException(status_code=404, detail="登记记录不存在")
+        return FileResponse(path, media_type="image/jpeg")
+
+    @app.delete("/api/faces/{identity_id}", status_code=204)
+    async def delete_face(identity_id: str) -> None:
+        if face_registry is None or not face_registry.delete(identity_id):
+            raise HTTPException(status_code=404, detail="登记记录不存在")
 
     @app.get("/stream.mjpg")
     async def stream() -> StreamingResponse:
@@ -253,6 +293,28 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.getenv("EDGE_STREAM_TOKEN", ""),
         help="Shared token (defaults to EDGE_STREAM_TOKEN)",
     )
+    parser.add_argument(
+        "--face-recognition",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Recognize enrolled people with OpenCV YuNet and SFace",
+    )
+    parser.add_argument(
+        "--face-model-dir",
+        default="artifacts/models",
+        help="Directory for downloaded YuNet and SFace ONNX models",
+    )
+    parser.add_argument(
+        "--face-db",
+        default="artifacts/faces",
+        help="Directory for enrolled photos and face embeddings",
+    )
+    parser.add_argument(
+        "--face-threshold",
+        type=float,
+        default=0.363,
+        help="Minimum SFace cosine similarity for a known identity",
+    )
     return parser
 
 
@@ -264,6 +326,14 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     args = build_parser().parse_args()
+    face_registry = None
+    if args.face_recognition:
+        detector_model, recognizer_model = ensure_face_models(Path(args.face_model_dir))
+        face_registry = FaceRegistry(
+            Path(args.face_db),
+            OpenCvFaceBackend(detector_model, recognizer_model),
+            args.face_threshold,
+        )
     detector = build_detector(
         args.detector,
         args.model,
@@ -273,10 +343,11 @@ def main() -> None:
         args.tracking,
         args.roi,
         args.track_missing_frames,
+        face_registry,
     )
     event_log_path = Path(args.event_log) if args.event_log else None
     uvicorn.run(
-        create_app(detector, args.token, event_log_path),
+        create_app(detector, args.token, event_log_path, face_registry),
         host=args.host,
         port=args.port,
     )

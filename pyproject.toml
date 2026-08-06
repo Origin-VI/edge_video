@@ -20,6 +20,8 @@ device = [
 edge = [
   "fastapi>=0.115,<1",
   "lap>=0.5.12,<1",
+  "pillow>=10,<13",
+  "python-multipart>=0.0.20,<1",
   "uvicorn[standard]>=0.30,<1",
   "ultralytics>=8.3,<9",
 ]

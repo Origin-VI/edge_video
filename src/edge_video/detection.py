@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 from typing import Protocol
 
 import cv2
@@ -25,6 +27,10 @@ class Detector(Protocol):
     name: str
 
     def detect(self, frame: np.ndarray) -> DetectionResult: ...
+
+
+class FaceIdentityProvider(Protocol):
+    def identify_people(self, frame: np.ndarray, people: list[dict[str, object]]) -> None: ...
 
 
 class MockDetector:
@@ -78,6 +84,7 @@ class YoloDetector:
         tracking: bool,
         roi: tuple[float, float, float, float],
         missing_grace_frames: int,
+        face_registry: FaceIdentityProvider | None = None,
     ) -> None:
         try:
             from ultralytics import YOLO
@@ -92,6 +99,7 @@ class YoloDetector:
         self.device = device
         self.tracking = tracking
         self.region_counter = RegionCounter(roi, missing_grace_frames)
+        self.face_registry = face_registry
 
     def detect(self, frame: np.ndarray) -> DetectionResult:
         started = time.perf_counter()
@@ -127,11 +135,16 @@ class YoloDetector:
                     detected["track_id"] = int(box.id[0].item())
                 objects.append(detected)
 
+        people = [detected for detected in objects if detected["label"] == "person"]
+        if self.face_registry is not None:
+            self.face_registry.identify_people(frame, people)
+
         annotated = result.plot()
+        if self.face_registry is not None:
+            _draw_identity_labels(annotated, people)
         tracking_summary: dict[str, object] = {"tracking_enabled": False}
         events: list[dict[str, object]] = []
         if self.tracking:
-            people = [detected for detected in objects if detected["label"] == "person"]
             tracking_summary, events = self.region_counter.update(
                 people,
                 frame_width=frame.shape[1],
@@ -157,6 +170,7 @@ def build_detector(
     tracking: bool = True,
     roi: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0),
     missing_grace_frames: int = 10,
+    face_registry: FaceIdentityProvider | None = None,
 ) -> Detector:
     if kind == "mock":
         return MockDetector()
@@ -169,8 +183,61 @@ def build_detector(
             tracking,
             roi,
             missing_grace_frames,
+            face_registry,
         )
     raise ValueError(f"Unknown detector: {kind}")
+
+
+def _draw_identity_labels(frame: np.ndarray, people: list[dict[str, object]]) -> None:
+    labels: list[tuple[int, int, str, tuple[int, int, int]]] = []
+    frame_height, frame_width = frame.shape[:2]
+    for person in people:
+        coordinates = person.get("xyxy")
+        identity = person.get("identity")
+        if not isinstance(coordinates, list) or len(coordinates) != 4 or not identity:
+            continue
+        x1, y1, _, _ = (round(float(value)) for value in coordinates)
+        label = str(identity)
+        color = (130, 220, 70) if identity != "stranger" else (245, 170, 70)
+        labels.append((x1, y1, label, color))
+
+    if not labels:
+        return
+
+    from PIL import Image, ImageDraw
+
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    image = Image.fromarray(rgb)
+    draw = ImageDraw.Draw(image)
+    font = _identity_font()
+    for x1, y1, label, color in labels:
+        left, top, right, bottom = draw.textbbox((0, 0), label, font=font)
+        text_width = right - left
+        text_height = bottom - top
+        label_x = max(0, min(x1, frame_width - text_width - 12))
+        label_y = max(0, min(y1 - text_height - 14, frame_height - text_height - 12))
+        draw.rectangle(
+            (label_x, label_y, label_x + text_width + 10, label_y + text_height + 9),
+            fill=(22, 24, 18),
+        )
+        draw.text((label_x + 5, label_y + 2 - top), label, font=font, fill=color)
+    frame[:] = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
+
+
+@lru_cache(maxsize=1)
+def _identity_font():
+    from PIL import ImageFont
+
+    candidates = (
+        Path("C:/Windows/Fonts/msyh.ttc"),
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+    )
+    for path in candidates:
+        if path.is_file():
+            return ImageFont.truetype(str(path), 22)
+    return ImageFont.load_default()
 
 
 def _draw_region_overlay(

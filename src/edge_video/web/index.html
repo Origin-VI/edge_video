@@ -27,7 +27,7 @@
     #connection.streaming { color: #65d59a; }
     main {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 320px;
+      grid-template-columns: minmax(0, 1fr) 360px;
       min-height: calc(100vh - 64px);
     }
     .video-area {
@@ -87,6 +87,60 @@
     }
     #events { margin: 0; padding: 0; list-style: none; }
     .section-gap { margin-top: 28px; }
+    .enroll-form { display: grid; gap: 10px; margin-bottom: 14px; }
+    .enroll-form input {
+      width: 100%;
+      min-height: 38px;
+      padding: 8px 10px;
+      border: 1px solid #3a4540;
+      border-radius: 5px;
+      color: #edf2ef;
+      background: #101412;
+      font: inherit;
+    }
+    .enroll-form input[type="file"] { padding: 7px; font-size: 12px; }
+    button {
+      min-height: 38px;
+      border: 1px solid #4c9d73;
+      border-radius: 5px;
+      color: #07120c;
+      background: #65d59a;
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.55; cursor: wait; }
+    .form-message { min-height: 20px; margin: 0; color: #a9b5af; font-size: 12px; }
+    .form-message.error { color: #f08b78; }
+    .face-list { display: grid; gap: 1px; margin: 0; padding: 0; list-style: none; }
+    .face-row {
+      min-height: 58px;
+      display: grid;
+      grid-template-columns: 44px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid #2b322f;
+    }
+    .face-row img {
+      width: 40px;
+      height: 40px;
+      border-radius: 4px;
+      object-fit: cover;
+      background: #090c0b;
+    }
+    .face-row span { overflow-wrap: anywhere; font-size: 14px; }
+    .delete-face {
+      width: 34px;
+      min-height: 34px;
+      padding: 0;
+      border-color: #5b3733;
+      color: #f0a194;
+      background: transparent;
+      font-size: 19px;
+      line-height: 1;
+    }
+    .identity-known { color: #65d59a; }
+    .identity-stranger { color: #f0b95a; }
     @media (max-width: 840px) {
       main { grid-template-columns: 1fr; }
       .video-area { min-height: 56vw; padding: 10px; }
@@ -128,6 +182,14 @@
       <ul id="objects"><li><span>暂无目标</span><span>-</span></li></ul>
       <h2 class="section-gap">最近事件</h2>
       <ul id="events"><li><span>暂无事件</span><span>-</span></li></ul>
+      <h2 class="section-gap">门禁人员库</h2>
+      <form id="enroll-form" class="enroll-form">
+        <input id="person-name" name="name" maxlength="64" required placeholder="姓名" autocomplete="off">
+        <input id="person-photo" name="photo" type="file" accept="image/jpeg,image/png,image/webp" required>
+        <button id="enroll-button" type="submit">登记人员</button>
+        <p id="form-message" class="form-message" aria-live="polite"></p>
+      </form>
+      <ul id="face-list" class="face-list"><li class="face-row"><span></span><span>暂无登记人员</span></li></ul>
     </aside>
   </main>
   <script>
@@ -174,7 +236,11 @@
             const confidence = document.createElement("span");
             const track = item.track_id === undefined ? "" : `#${item.track_id} `;
             const region = item.inside_roi ? " · ROI" : "";
-            label.textContent = `${track}${item.label}${region}`;
+            const identity = item.label === "person" ? ` · ${item.identity || "stranger"}` : "";
+            label.textContent = `${track}${item.label}${identity}${region}`;
+            if (item.label === "person") {
+              label.className = item.identity && item.identity !== "stranger" ? "identity-known" : "identity-stranger";
+            }
             confidence.textContent = `${Math.round(item.confidence * 100)}%`;
             row.append(label, confidence);
             objects.append(row);
@@ -202,7 +268,75 @@
       }
     }
 
+    async function refreshFaces() {
+      const list = document.getElementById("face-list");
+      try {
+        const response = await fetch("/api/faces", { cache: "no-store" });
+        const data = await response.json();
+        list.replaceChildren();
+        if (!data.enabled) {
+          list.innerHTML = '<li class="face-row"><span></span><span>人脸识别未启用</span></li>';
+          document.getElementById("enroll-button").disabled = true;
+          return;
+        }
+        if (!data.identities.length) {
+          list.innerHTML = '<li class="face-row"><span></span><span>暂无登记人员</span></li>';
+          return;
+        }
+        for (const identity of data.identities) {
+          const row = document.createElement("li");
+          row.className = "face-row";
+          const photo = document.createElement("img");
+          photo.src = identity.photo_url;
+          photo.alt = `${identity.name} 的登记照`;
+          const name = document.createElement("span");
+          name.textContent = identity.name;
+          const remove = document.createElement("button");
+          remove.className = "delete-face";
+          remove.type = "button";
+          remove.textContent = "×";
+          remove.title = `删除 ${identity.name}`;
+          remove.setAttribute("aria-label", `删除 ${identity.name}`);
+          remove.addEventListener("click", () => deleteFace(identity));
+          row.append(photo, name, remove);
+          list.append(row);
+        }
+      } catch (_) {
+        list.innerHTML = '<li class="face-row"><span></span><span>人员库读取失败</span></li>';
+      }
+    }
+
+    async function deleteFace(identity) {
+      if (!window.confirm(`确定删除 ${identity.name} 的登记信息吗？`)) return;
+      const response = await fetch(`/api/faces/${identity.id}`, { method: "DELETE" });
+      if (response.ok) await refreshFaces();
+    }
+
+    document.getElementById("enroll-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const button = document.getElementById("enroll-button");
+      const message = document.getElementById("form-message");
+      button.disabled = true;
+      message.className = "form-message";
+      message.textContent = "正在提取人脸特征...";
+      try {
+        const response = await fetch("/api/faces", { method: "POST", body: new FormData(form) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "登记失败");
+        form.reset();
+        message.textContent = `${data.name} 已登记`;
+        await refreshFaces();
+      } catch (error) {
+        message.className = "form-message error";
+        message.textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
     refreshStatus();
+    refreshFaces();
     setInterval(refreshStatus, 1000);
   </script>
 </body>
