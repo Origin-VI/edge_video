@@ -14,11 +14,11 @@
 ## 环境要求
 
 - 笔记本：Windows 10/11、Anaconda、Python 3.11
-- 树莓派：Raspberry Pi OS Bookworm 64-bit、Python 3.11
+- 树莓派：64-bit Debian/Raspberry Pi OS、Python 3.11 或 3.13
 - 两台设备网络互通，树莓派可以访问笔记本 TCP 端口 `8000`
 - USB 摄像头或 Raspberry Pi CSI 摄像头
 
-两端统一使用 Python 3.11。笔记本使用 Conda 隔离 AI 依赖；树莓派使用轻量的 `venv`，CSI 摄像头场景通过 `--system-site-packages` 复用 Raspberry Pi OS 提供的 Picamera2。
+笔记本 AI 端固定使用 Python 3.11，以获得稳定的 PyTorch/Ultralytics 支持。树莓派设备端可以使用系统 Python 3.11 或 3.13；两端通过二进制协议通信，不要求 Python 小版本一致。树莓派使用轻量的 `venv`，CSI 摄像头场景通过 `--system-site-packages` 复用系统提供的 Picamera2。
 
 ## 1. 笔记本本地验证
 
