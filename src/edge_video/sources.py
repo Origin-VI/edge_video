@@ -19,6 +19,10 @@ class OpenCVSource:
     def __init__(self, source: str, width: int, height: int) -> None:
         parsed_source: int | str = int(source) if source.isdecimal() else source
         self.capture = cv2.VideoCapture(parsed_source)
+        if isinstance(parsed_source, int):
+            # UVC cameras can sustain higher resolutions with hardware MJPEG than raw YUYV.
+            self.capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if width > 0:
             self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         if height > 0:
@@ -102,4 +106,3 @@ def open_video_source(source: str, width: int, height: int) -> VideoSource:
     if source == "picamera2":
         return Picamera2Source(width, height)
     return OpenCVSource(source, width, height)
-
