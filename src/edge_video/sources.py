@@ -16,12 +16,15 @@ class VideoSource(Protocol):
 
 
 class OpenCVSource:
-    def __init__(self, source: str, width: int, height: int) -> None:
+    def __init__(self, source: str, width: int, height: int, camera_codec: str = "MJPG") -> None:
         parsed_source: int | str = int(source) if source.isdecimal() else source
         self.capture = cv2.VideoCapture(parsed_source)
         if isinstance(parsed_source, int):
-            # UVC cameras can sustain higher resolutions with hardware MJPEG than raw YUYV.
-            self.capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            if camera_codec != "auto":
+                self.capture.set(
+                    cv2.CAP_PROP_FOURCC,
+                    cv2.VideoWriter_fourcc(*camera_codec),
+                )
             self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if width > 0:
             self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
@@ -100,9 +103,14 @@ class SyntheticSource:
         return None
 
 
-def open_video_source(source: str, width: int, height: int) -> VideoSource:
+def open_video_source(
+    source: str,
+    width: int,
+    height: int,
+    camera_codec: str = "MJPG",
+) -> VideoSource:
     if source == "synthetic":
         return SyntheticSource(width, height)
     if source == "picamera2":
         return Picamera2Source(width, height)
-    return OpenCVSource(source, width, height)
+    return OpenCVSource(source, width, height, camera_codec)

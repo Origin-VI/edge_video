@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import socket
@@ -30,6 +31,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--width", type=int, default=1280, help="Requested capture width")
     parser.add_argument("--height", type=int, default=720, help="Requested capture height")
+    parser.add_argument(
+        "--camera-codec",
+        choices=("MJPG", "YUYV", "auto"),
+        default="MJPG",
+        help="Requested USB camera format",
+    )
     parser.add_argument("--max-width", type=int, default=960, help="Transmitted frame width limit")
     parser.add_argument("--fps", type=float, default=10.0, help="Maximum transmitted FPS")
     parser.add_argument("--jpeg-quality", type=int, default=75)
@@ -56,6 +63,48 @@ def add_token(url: str, token: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
+def estimate_clock_offset(
+    client_send_ns: int,
+    server_receive_ns: int,
+    server_send_ns: int,
+    client_receive_ns: int,
+) -> tuple[int, float]:
+    offset_ns = (
+        (server_receive_ns - client_send_ns) + (server_send_ns - client_receive_ns)
+    ) // 2
+    rtt_ns = max(
+        0,
+        (client_receive_ns - client_send_ns) - (server_send_ns - server_receive_ns),
+    )
+    return offset_ns, rtt_ns / 1_000_000
+
+
+async def synchronize_clock(websocket) -> tuple[int, float | None]:
+    client_send_ns = time.time_ns()
+    await websocket.send(
+        json.dumps({"type": "clock_sync", "client_send_ns": client_send_ns})
+    )
+    try:
+        raw_response = await asyncio.wait_for(websocket.recv(), timeout=5)
+        client_receive_ns = time.time_ns()
+        if not isinstance(raw_response, str):
+            raise TypeError("Clock response is not text")
+        response = json.loads(raw_response)
+        if response.get("type") != "clock_sync":
+            raise ValueError("Unexpected clock response")
+        offset_ns, rtt_ms = estimate_clock_offset(
+            int(response["client_send_ns"]),
+            int(response["server_receive_ns"]),
+            int(response["server_send_ns"]),
+            client_receive_ns,
+        )
+        LOG.info("Clock synchronized: offset %.1f ms, RTT %.1f ms", offset_ns / 1e6, rtt_ms)
+        return offset_ns, rtt_ms
+    except (TimeoutError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        LOG.warning("Clock synchronization failed: %s", exc)
+        return 0, None
+
+
 async def stream_once(
     source: VideoSource,
     server_url: str,
@@ -72,6 +121,7 @@ async def stream_once(
         close_timeout=5,
     ) as websocket:
         LOG.info("Connected to edge server: %s", urlsplit(server_url)._replace(query="").geturl())
+        clock_offset_ns, clock_rtt_ms = await synchronize_clock(websocket)
         while True:
             loop_started = time.perf_counter()
             ok, frame = await asyncio.to_thread(source.read)
@@ -82,6 +132,8 @@ async def stream_once(
             metadata = {
                 "frame_id": frame_id,
                 "sent_at_ns": time.time_ns(),
+                "clock_offset_ns": clock_offset_ns,
+                "clock_rtt_ms": None if clock_rtt_ms is None else round(clock_rtt_ms, 1),
                 "width": processed.width,
                 "height": processed.height,
                 "endpoint_processing_ms": round(processed.processing_ms, 3),
@@ -96,7 +148,7 @@ async def stream_once(
 
 
 async def run(args: argparse.Namespace) -> None:
-    source = open_video_source(args.source, args.width, args.height)
+    source = open_video_source(args.source, args.width, args.height, args.camera_codec)
     preprocess_config = PreprocessConfig(
         max_width=args.max_width,
         jpeg_quality=args.jpeg_quality,
@@ -133,4 +185,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

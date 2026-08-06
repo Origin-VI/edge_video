@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import contextlib
 import hmac
+import json
 import logging
 import os
 import time
@@ -48,11 +49,17 @@ async def inference_worker(state: RuntimeState, detector: Detector) -> None:
 
             now_ns = time.time_ns()
             sent_at_ns = queued.packet.metadata.get("sent_at_ns")
+            clock_offset_ns = queued.packet.metadata.get("clock_offset_ns", 0)
             network_ms = None
             end_to_end_ms = None
-            if isinstance(sent_at_ns, int) and sent_at_ns <= now_ns:
-                network_ms = round((queued.received_at_ns - sent_at_ns) / 1_000_000, 1)
-                end_to_end_ms = round((now_ns - sent_at_ns) / 1_000_000, 1)
+            if isinstance(sent_at_ns, int) and isinstance(clock_offset_ns, int):
+                corrected_sent_at_ns = sent_at_ns + clock_offset_ns
+                if corrected_sent_at_ns <= now_ns:
+                    network_ms = round(
+                        (queued.received_at_ns - corrected_sent_at_ns) / 1_000_000,
+                        1,
+                    )
+                    end_to_end_ms = round((now_ns - corrected_sent_at_ns) / 1_000_000, 1)
 
             stats = {
                 "detector": detector.name,
@@ -62,6 +69,7 @@ async def inference_worker(state: RuntimeState, detector: Detector) -> None:
                 "jpeg_kb": round(len(queued.packet.jpeg) / 1024, 1),
                 "endpoint_processing_ms": queued.packet.metadata.get("endpoint_processing_ms"),
                 "network_ms": network_ms,
+                "clock_rtt_ms": queued.packet.metadata.get("clock_rtt_ms"),
                 "inference_ms": round(result.inference_ms, 1),
                 "end_to_end_ms": end_to_end_ms,
                 "object_count": len(result.objects),
@@ -128,7 +136,28 @@ def create_app(detector: Detector, token: str = "") -> FastAPI:
         LOG.info("Device connected: %s", device_id)
         try:
             while True:
-                payload = await websocket.receive_bytes()
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    break
+                if text_payload := message.get("text"):
+                    server_receive_ns = time.time_ns()
+                    try:
+                        control = json.loads(text_payload)
+                        if control.get("type") != "clock_sync":
+                            raise ValueError("Unknown control message")
+                        response = {
+                            "type": "clock_sync",
+                            "client_send_ns": int(control["client_send_ns"]),
+                            "server_receive_ns": server_receive_ns,
+                            "server_send_ns": time.time_ns(),
+                        }
+                        await websocket.send_json(response)
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                        LOG.warning("Rejected control message from %s: %s", device_id, exc)
+                    continue
+                payload = message.get("bytes")
+                if payload is None:
+                    continue
                 try:
                     packet = unpack_frame(payload)
                 except ProtocolError as exc:
@@ -190,4 +219,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
