@@ -99,10 +99,25 @@ USB 摄像头通常使用 `--source 0`：
 ./.venv/bin/python -m edge_video.device \
   --server ws://<笔记本IP>:8000/ws/ingest/rpi5 \
   --source 0 \
+  --camera-codec MJPG \
   --width 1280 \
   --height 720 \
   --max-width 960 \
   --fps 10 \
+  --jpeg-quality 75
+```
+
+部分 Logitech UVC 摄像头的 MJPEG 帧会触发 `extraneous bytes before marker` 警告。画面通常仍可解码，但推荐改用无警告的 YUYV 配置：
+
+```bash
+./.venv/bin/python -m edge_video.device \
+  --server ws://<笔记本IP>:8000/ws/ingest/rpi5 \
+  --source 0 \
+  --camera-codec YUYV \
+  --width 960 \
+  --height 544 \
+  --max-width 960 \
+  --fps 5 \
   --jpeg-quality 75
 ```
 
@@ -191,6 +206,17 @@ $env:HTTPS_PROXY="http://127.0.0.1:<代理端口>"
 ```
 
 端口应替换为代理软件显示的本地 HTTP 代理端口。安装结束后可关闭当前终端，避免代理设置影响其他命令。
+
+若树莓派的 `/etc/pip.conf` 配置了访问缓慢的 piwheels，可临时忽略全局配置：
+
+```bash
+PIP_CONFIG_FILE=/dev/null ./.venv/bin/python -m pip install setuptools wheel \
+  -i https://pypi.tuna.tsinghua.edu.cn/simple
+PIP_CONFIG_FILE=/dev/null ./.venv/bin/python -m pip install --no-build-isolation \
+  -e ".[device]" -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+发送端与服务端会在 WebSocket 建连时进行一次 NTP 式时钟同步。网页中的“时钟同步 RTT”是同步往返时间，“网络传输”和“端到端延迟”已经校正两台设备的系统时钟偏差。
 
 ## 演示与提交建议
 
