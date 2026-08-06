@@ -1,6 +1,6 @@
 # 双设备边缘视频分析系统
 
-这是一个运行在真实设备上的视频流计算项目：树莓派 5（设备 A）采集视频，完成对比度增强、缩放、帧率控制和 JPEG 压缩；笔记本电脑（设备 B）通过 WebSocket 接收视频，运行 YOLO 目标检测、ByteTrack 人员跟踪、区域人数统计和人脸身份匹配，并在网页中展示画面、门禁身份和实时性能数据。
+这是一个视频流计算项目：树莓派 5（设备 A）采集视频，完成对比度增强、缩放、帧率控制和 JPEG 压缩；笔记本电脑（设备 B）通过 WebSocket 接收视频，运行 YOLO 目标检测、ByteTrack 人员跟踪、区域人数统计和人脸身份匹配，并在网页中展示画面、门禁身份和实时性能数据。
 
 ## 系统结构
 
@@ -39,6 +39,12 @@ python -m pip install -e ".[edge,dev]"
 python -m edge_video.edge --detector mock
 ```
 
+补充：当前服务端默认开启人脸识别。`--detector mock` 不运行 YOLO 目标检测，但仍会检查 YuNet/SFace 人脸模型；如果只是做纯传输链路验证，或者当前没有互联网下载模型，可以临时追加 `--no-face-recognition`：
+
+```powershell
+python -m edge_video.edge --detector mock --no-face-recognition
+```
+
 打开第二个 PowerShell 窗口，发送合成视频：
 
 ```powershell
@@ -68,6 +74,8 @@ python -m edge_video.edge `
 ```powershell
 python -m edge_video.edge --detector yolo --classes ""
 ```
+
+补充：如果需要完全离线运行，应提前把 YOLO 权重文件放在项目目录，或通过 `--model` 指向本地权重文件。人脸识别默认还会使用两个 OpenCV ONNX 模型；如果这两个文件已经手动放入 `artifacts/models/`，服务端会直接复用本地文件，不再下载。
 
 如果笔记本有可用的 NVIDIA GPU，可追加 `--device 0`；没有时默认使用 CPU。
 
@@ -150,7 +158,7 @@ sudo apt install python3-picamera2
 
 使用 `Ctrl+C` 停止任意一端程序。
 
-## 4. 校园网连通性
+## 4. 校园网/手机热点连通性
 
 在笔记本执行 `ipconfig`，找到当前 Wi-Fi 的 IPv4 地址。启动服务后，在树莓派测试：
 
@@ -237,11 +245,7 @@ python -m edge_video.edge --no-face-recognition
 python -m edge_video.edge --face-threshold 0.45
 ```
 
-阈值越高越严格，误识别会减少，但光线、角度或摄像头清晰度较差时更容易显示 `stranger`。证件照与实时画面尽量保持相近的正脸角度。此功能适合课程演示，不应直接作为生产门锁的唯一认证因素；采集和保存人脸数据前应取得本人同意。
-
-### 门禁功能演示建议
-
-先登记两名人员并在网页名单中展示照片。让已登记人员进入画面，展示稳定的轨迹 ID 和姓名；再让一名未登记人员进入，展示 `stranger`。随后让多人同时出现在画面中，证明每个人员框可独立关联身份，并结合 ROI 的当前人数、累计进入和累计离开指标完成演示。
+阈值越高越严格，误识别会减少，但光线、角度或摄像头清晰度较差时更容易显示 `stranger`。证件照与实时画面尽量保持相近的正脸角度。
 
 ## 7. 测试
 
@@ -300,6 +304,12 @@ sudo nmcli radio wifi on
 
 如果当前是通过 SSH 连接树莓派，关闭 Wi-Fi 会同时断开 SSH。可以提前安排 10 秒后自动打开 Wi-Fi，再关闭无线：
 
+建议先执行一次 `sudo -v`，确认当前终端已经缓存管理员权限，避免 Wi-Fi 断开后后台恢复命令还在等待输入密码：
+
+```bash
+sudo -v
+```
+
 ```bash
 (sleep 10; sudo nmcli radio wifi on) & sudo nmcli radio wifi off
 ```
@@ -331,9 +341,3 @@ PIP_CONFIG_FILE=/dev/null ./.venv/bin/python -m pip install --no-build-isolation
 ```
 
 发送端与服务端会在 WebSocket 建连时进行一次 NTP 式时钟同步。网页中的“时钟同步 RTT”是同步往返时间，“网络传输”和“端到端延迟”已经校正两台设备的系统时钟偏差。
-
-## 演示与提交建议
-
-最终实拍视频至少同时拍到树莓派/摄像头、被检测场景和笔记本实时网页。先展示端侧预处理参数，再展示人员进入画面后的检测框及性能指标；最后短暂断开网络并恢复，可以体现发送端自动重连能力。
-
-提交仓库应保留清晰的提交历史。模型权重、虚拟环境和大体积录制视频已被 `.gitignore` 排除；视频可使用 GitHub/Gitee Release 或网盘链接提供。
